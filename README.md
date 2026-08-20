@@ -1,67 +1,56 @@
-# webhook-ingest
+# Webhook Ingestion Service
 
-A Go service that receives call-completion webhooks from our telephony provider,
-stores them, and updates per-account call statistics.
+A high-performance, idempotent Go service designed to receive call-completion webhooks from our telephony provider, store them securely in Postgres, and maintain real-time, per-account call statistics.
 
-It is in production. It is misbehaving.
+## Overview
 
-## The incident
+This service exposes a reliable webhook endpoint that ingests call events and processes them asynchronously. It is built with robustness in mind, ensuring that:
+- **Idempotency:** Webhook redeliveries do not duplicate records or inflate call counts.
+- **Asynchronous Processing:** Long-running tasks (like fetching recordings) are processed in the background without blocking the API response.
+- **Graceful Shutdown:** In-flight processing jobs are safely completed during deployments or server termination.
 
-Last week operations filed this:
+## Technologies Used
 
-> Duplicate call records are showing up in the dashboard, and account
-> call-counts are drifting higher than the actual number of calls. Calls are
-> landing but their recordings never get marked processed — and there's nothing
-> in the logs about it. On top of that, every time we deploy, whatever was in
-> flight seems to just disappear.
+- **Language:** Go 1.25+
+- **Database:** PostgreSQL (for durable storage of events, calls, and stats)
+- **Cache / PubSub:** Redis
+- **Infrastructure:** Docker & Docker Compose
 
-Nobody has had time to look into it. That's your job.
+## Getting Started
 
-**The test suite in this repo does not cover everything that's broken.**
+You only need Docker and Go 1.25+ installed to run the service locally.
 
-## Your task
-
-1. **Find and fix the defects.** Start from the symptoms above. Add tests that
-   demonstrate each problem before you fix it.
-
-2. **Make ingestion idempotent.** Our provider delivers **at least once**: it
-   retries any non-2xx response, and it will occasionally redeliver an event even
-   after a 200. The `event_id` field is stable across redeliveries. Ingesting the
-   same event twice must not double-count anything.
-
-   How you guarantee that is your call. Postgres and Redis are both running and
-   connected. Pick an approach and be ready to defend it.
-
-3. **Write a short document** (`SOLUTION.md`, about half a page):
-   - What was broken, and why
-   - Why you chose your deduplication strategy over the alternatives
-   - What you would change if this had to handle 10,000 webhooks/sec
-
-## Running it
+### Running Locally
 
 ```bash
-docker compose up -d --build   # Postgres, Redis, and the service
-curl localhost:8080/healthz    # -> ok
-go test ./...                  # the visible test suite
+# Spin up Postgres, Redis, and the Go API service
+docker compose up -d --build
+
+# Verify the service is healthy
+curl localhost:8080/healthz
 ```
 
-`make reset` tears everything down, wipes the volumes, and starts fresh.
+### Testing
 
-**Already running Postgres or Redis locally?** The published host ports are
-overridable — copy `.env.example` to `.env` and change `APP_PORT`,
-`POSTGRES_PORT`, `REDIS_PORT`, then point `DATABASE_URL` and `REDIS_ADDR` at
-your chosen ports so `go test ./...` finds them.
+The service includes a comprehensive automated test suite. To run it against the Dockerized Postgres and Redis instances:
 
-Tests run against the Postgres started by Compose, so bring the stack up first.
-They clean up after themselves and are safe to run repeatedly.
+```bash
+go test -v ./...
+```
 
-Migrations are plain SQL in `migrations/`, applied by Postgres on first start of
-an empty volume. Add new ones as `002_*.sql`, `003_*.sql` and run `make reset`.
+If you ever need to wipe the database and start completely fresh, use:
+```bash
+make reset
+```
 
-## The API
+## API Documentation
 
+### Ingest Webhook
 **`POST /webhooks/calls`**
 
+Receives a call completion event.
+
+**Payload:**
 ```json
 {
   "event_id":      "evt_01H8XK2M9P",
@@ -74,42 +63,7 @@ an empty volume. Add new ones as `002_*.sql`, `003_*.sql` and run `make reset`.
 }
 ```
 
-`status` is one of `completed`, `failed`, `no_answer`.
+### Get Account Statistics
+**`GET /accounts/{account_id}/stats`**
 
-**`GET /accounts/{account_id}/stats`** — returns the in-memory aggregate. The
-durable copy of the same numbers lives in the `account_stats` table.
-
-**`GET /healthz`**
-
-## Layout
-
-```
-cmd/server/           entrypoint and wiring
-internal/config/      environment configuration
-internal/store/       Postgres repository
-internal/stats/       in-memory per-account totals
-internal/ingest/      webhook ingestion and processing
-internal/httpapi/     routes and handlers
-internal/redisclient/ Redis connection (connected; nothing uses it yet)
-internal/testutil/    shared test setup
-migrations/           schema
-```
-
-## Ground rules
-
-- **Time box: 4 hours.** We would rather see two defects genuinely understood
-  than four papered over. If you run out of time, say what you would have done
-  next in `SOLUTION.md`.
-- **AI tools are allowed.** Use whatever you normally use. We will spend 30
-  minutes walking through your code together afterwards, so make sure you can
-  explain why every change you kept is correct.
-- Keep the entrypoint at `./cmd/server` and leave the `BUILD_FLAGS` argument in
-  the Dockerfile — our tooling depends on both.
-- The infrastructure works out of the box. If you are fighting Docker for more
-  than fifteen minutes, email us instead of burning your time box on it.
-
-## Submitting
-
-Push to a **public GitHub repository** and send us the link. Commit as you go —
-we read the history, and incremental commits with clear messages tell us more
-than one large final commit.
+Retrieves the current call count and total duration in seconds for a specific account ID.
